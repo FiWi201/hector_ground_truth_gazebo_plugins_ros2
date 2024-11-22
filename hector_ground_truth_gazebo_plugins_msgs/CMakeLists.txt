@@ -1,31 +1,35 @@
-cmake_minimum_required(VERSION 3.5.1)
+cmake_minimum_required(VERSION 3.8)
 project(hector_ground_truth_gazebo_plugins_msgs)
 
-find_package(catkin REQUIRED COMPONENTS message_generation geometry_msgs grid_map_msgs)
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(map_bag_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 
 ################################################
 ## Declare ROS messages, services and actions ##
 ################################################
 
-
-add_message_files(
-  FILES
-  ContactPointsStamped.msg
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/GenerateGroundTruth.srv"
+  DEPENDENCIES std_msgs geometry_msgs map_bag_msgs
 )
 
-## Generate services in the 'srv' folder
-add_service_files(
-  FILES
-  GenerateGroundTruth.srv
-)
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  # the following line skips the linter which checks for copyrights
+  # comment the line when a copyright and license is added to all source files
+  set(ament_cmake_copyright_FOUND TRUE)
+  # the following line skips cpplint (only works in a git repo)
+  # comment the line when this package is in a git repo and when
+  # a copyright and license is added to all source files
+  set(ament_cmake_cpplint_FOUND TRUE)
+  ament_lint_auto_find_test_dependencies()
+endif()
 
-## Generate added messages and services with any dependencies listed here
-generate_messages(DEPENDENCIES geometry_msgs grid_map_msgs)
-
-###################################
-## catkin specific configuration ##
-###################################
-
-catkin_package(
-  CATKIN_DEPENDS geometry_msgs grid_map_msgs message_runtime
-)
+ament_package()

@@ -1,64 +1,105 @@
 // Copyright (c) 2019 Stefan Fabian. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-#include "hector_ground_truth_gazebo_plugins/elevation_map_ground_truth_plugin.h"
+#include <Eigen/Core>
+#include <gz/sim/Model.hh>
+#include <gz/sim/Util.hh>
+#include <gz/sim/System.hh>
+#include <gz/rendering/Scene.hh>
+#include <gz/rendering/RayQuery.hh>
+#include <gz/rendering/RenderingIface.hh>
+#include <gz/rendering/RenderEngine.hh>
 
-#include <grid_map_ros/GridMapRosConverter.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <map_bag_msgs/msg/map.hpp>
+#include <map_bag/map.hpp>
+#include <map_bag_ros/message_conversions/map.hpp>
+#include <hector_ground_truth_gazebo_plugins_msgs/srv/generate_ground_truth.hpp>
+#include <hector_ground_truth_gazebo_plugins/elevation_map_ground_truth_plugin.hpp>
 
-#include <gazebo/physics/PhysicsEngine.hh>
-#include <gazebo/physics/RayShape.hh>
-#include <gazebo/physics/World.hh>
 
-using namespace gazebo::physics;
-using namespace ignition;
 using namespace hector_ground_truth_gazebo_plugins_msgs;
 
-namespace hector_ground_truth_gazebo_plugins
+using namespace hector_ground_truth_gazebo_plugins;
+
+ElevationMapGroundTruthPlugin::ElevationMapGroundTruthPlugin()= default;
+
+ElevationMapGroundTruthPlugin::~ElevationMapGroundTruthPlugin()= default;
+
+void ElevationMapGroundTruthPlugin::Configure(const Entity &_entity,
+                                              const std::shared_ptr<const sdf::Element> &_sdf,
+                                              EntityComponentManager &_ecm,
+                                              EventManager &_eventMgr)
 {
-void ElevationMapGroundTruthPlugin::Load( gazebo::physics::WorldPtr world, sdf::ElementPtr sdf )
-{
-  world_ = world;
-  if ( !ros::isInitialized())
-  {
-    ros::init( ros::M_string{}, "gazebo", ros::init_options::AnonymousName | ros::init_options::NoSigintHandler );
-  }
-  nh_ = std::make_shared<ros::NodeHandle>();
-  nh_->setCallbackQueue( &queue_ );
-  spinner_ = std::make_shared<ros::AsyncSpinner>( 1, &queue_ );
-  spinner_->start();
-  service_server_ = nh_->advertiseService( "ground_truth/generate_elevation_map",
-                                           &ElevationMapGroundTruthPlugin::GenerateGroundTruthCallback, this );
-  publisher_ = nh_->advertise<grid_map_msgs::GridMap>( "ground_truth/elevation_map", 10, true );
+  (void) _entity;
+  (void) _sdf;
+  (void) _ecm;
+  (void) _eventMgr;
+
+  // Initialize ROS node
+  if (!rclcpp::ok())
+    rclcpp::init(0, nullptr);
+  node_ = std::make_shared<rclcpp::Node>("gazebo_ground_truth_node");
+
+  // Start server and publisher
+  using namespace std::placeholders;
+  service_server_ = node_->create_service<hector_ground_truth_gazebo_plugins_msgs::srv::GenerateGroundTruth>(
+    "ground_truth/generate_elevation_map",
+    std::bind(&ElevationMapGroundTruthPlugin::GenerateGroundTruthCallback, this, _1, _2));
+  publisher_ = node_->create_publisher<map_bag_msgs::msg::Map>(
+    "ground_truth/elevation_map", 10);
+
+  RCLCPP_INFO(node_->get_logger(), "Plugin was started");
 }
 
-bool ElevationMapGroundTruthPlugin::GenerateGroundTruthCallback( GenerateGroundTruthRequest &req,
-                                                                 GenerateGroundTruthResponse &resp )
+bool ElevationMapGroundTruthPlugin::GenerateGroundTruthCallback( std::shared_ptr<hector_ground_truth_gazebo_plugins_msgs::srv::GenerateGroundTruth::Request> req,
+                                                                 std::shared_ptr<hector_ground_truth_gazebo_plugins_msgs::srv::GenerateGroundTruth::Response> resp )
 {
-  long cells_x = req.cells_x;
-  double cells_x_2 = cells_x / 2.0;
-  long cells_y = req.cells_y;
-  double cells_y_2 = cells_y / 2.0;
-  long samples = req.samples;
+  RCLCPP_INFO(node_->get_logger(), "Request received");
+
+  auto start_time = node_->get_clock()->now();
+
+  // Get ray query for ray intersections
+  scene_ = sceneFromFirstRenderEngine();
+  if (scene_ == nullptr)
+  {
+    RCLCPP_ERROR(node_->get_logger(), "No rendering scene could be found!");
+    return false;
+  }
+  RCLCPP_INFO(node_->get_logger(), "Rendering scene %s found", scene_->Name().c_str());
+
+  const RayQueryPtr ray_query = scene_->CreateRayQuery();
+
+  const long cells_x = std::ceil(req->x_size / req->resolution);
+  const double cells_x_2 = cells_x / 2.0;
+  const long cells_y = std::ceil(req->y_size / req->resolution);
+  const double cells_y_2 = cells_y / 2.0;
+  const double min_elevation = req->max_z_height - req->truncation_distance;
+  long samples = req->samples;
   if ( samples <= 0 )
   {
-    ROS_INFO( "Samples needs to be greater than 0. Set to 1, was: %li", samples );
+    RCLCPP_INFO_STREAM(node_->get_logger(), "Samples needs to be greater than 0. Set to 1, was: " << samples);
     samples = 1;
   }
-  double sample_dist = 1.0 / (samples + 1);
-  grid_map::GridMap result( { "elevation" } );
-  result.setGeometry( { cells_x * req.resolution, cells_y * req.resolution }, req.resolution );
+  const double sample_dist = 1.0 / (samples + 1);
+  hector_math::GridMapf elevation_map{cells_x, cells_y};
 
-  PhysicsEnginePtr engine = world_->Physics();
-  engine->InitForThread();
-  auto ray = boost::dynamic_pointer_cast<RayShape>( engine->CreateShape( "ray", nullptr ));
-
-  math::Quaterniond q( req.origin.orientation.w, req.origin.orientation.x, req.origin.orientation.y,
-                       req.origin.orientation.z );
+  const math::Quaterniond q( req->origin.orientation.w, req->origin.orientation.x, req->origin.orientation.y,
+                       req->origin.orientation.z );
   std::string entity_name;
-  double resolution = req.resolution;
-  math::Vector3d origin( req.origin.position.x, req.origin.position.y, req.origin.position.z );
+  const double resolution = req->resolution;
+  const math::Vector3d origin( req->origin.position.x, req->origin.position.y, req->origin.position.z );
+
+  constexpr float progress_step_size = 0.05f;
+  float next_progress_step = progress_step_size;
+
   for ( Eigen::Index x = 0; x < cells_x; ++x )
   {
+    if ((float) x / cells_x >= next_progress_step)
+    {
+      RCLCPP_INFO(node_->get_logger(), "Heightmap Progress: %3.0f%%", next_progress_step * 100);
+      next_progress_step += progress_step_size;
+    }
     for ( Eigen::Index y = 0; y < cells_y; ++y )
     {
       double min_dist = std::numeric_limits<double>::quiet_NaN();
@@ -69,32 +110,46 @@ bool ElevationMapGroundTruthPlugin::GenerateGroundTruthCallback( GenerateGroundT
         {
           math::Vector3d start((x - cells_x_2 + 0.5 + (xi - (samples - 1) / 2.0) * sample_dist) * resolution,
                                (y - cells_y_2 + 0.5 + (yi - (samples - 1) / 2.0) * sample_dist) * resolution,
-                               req.max_z_height );
-          math::Vector3d end( start.X(), start.Y(), start.Z() - req.truncation_distance );
-          ray->SetPoints( origin + q * start, origin + q * end );
-          double dist = 0;
-          entity_name.clear();
-          ray->GetIntersection( dist, entity_name );
-          if ( entity_name.empty() || min_dist < dist ) continue; // NaN safe comparison
-          min_dist = dist;
+                               req->max_z_height );
+
+          ray_query->SetOrigin(origin + q * start);
+          ray_query->SetDirection( {0, 0, -1} );
+
+          const RayQueryResult ray_query_result = ray_query->ClosestPoint();
+          if (ray_query_result)
+            min_dist = ray_query_result.distance;
         }
       }
 
-      double elevation = req.max_z_height - min_dist;
-      if ( std::isfinite( elevation ))
-      {
-        // Matrix needs to be flipped as apparently grid map coordinate system is opposite to the gazebo coordinate system
-        result["elevation"]( cells_x - 1 - x, cells_y - 1 - y ) = elevation;
-      }
+      float elevation = static_cast<float>(req->max_z_height - min_dist);
+
+      // TODO Zugriff Optimieren
+      // Matrix needs to be flipped as apparently grid map coordinate system is opposite to the gazebo coordinate system
+      if (elevation > req->max_z_height || elevation < min_elevation)
+        elevation = map_bag::UnknownValue;
+
+      elevation_map( cells_x - 1 - x, cells_y - 1 - y ) = elevation;
     }
   }
+  /* TODO The origin vector could be transformed to allow for multiple maps with the same
+     Rotation to easily be joined in the same MapBag */
+  auto result = std::make_shared<const map_bag::Map>(elevation_map, Eigen::Vector3d::Zero(), req->resolution);
 
-  result.setFrameId( "world" );
-  grid_map::GridMapRosConverter::toMessage( result, resp.map );
-  if ( req.keep_origin ) resp.map.info.pose.position = req.origin.position;
-  publisher_.publish( resp.map );
+  resp->map = map_bag_ros::message_conversions::mapToMapMsg(result, {"elevation"});;
+  resp->map.header.frame_id = map_bag::Map::DEFAULT_FRAME;
+  resp->map.header.stamp = node_->get_clock()->now();
+
+  auto duration = node_->get_clock()->now().seconds() - start_time.seconds();
+  RCLCPP_INFO( node_->get_logger(), "Height map computed in %.2f Seconds", duration );
+
+  publisher_->publish( resp->map );
   return true;
 }
-}
 
-GZ_REGISTER_WORLD_PLUGIN( hector_ground_truth_gazebo_plugins::ElevationMapGroundTruthPlugin )
+void ElevationMapGroundTruthPlugin::PostUpdate(const gz::sim::UpdateInfo &_info, const gz::sim::EntityComponentManager &_ecm)
+{
+  (void) _info;
+  (void) _ecm;
+
+  rclcpp::spin_some(node_);
+}

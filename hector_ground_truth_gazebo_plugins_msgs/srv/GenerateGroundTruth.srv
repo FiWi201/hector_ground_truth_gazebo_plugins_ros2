@@ -1,4 +1,4 @@
-# The center of the elevation map and the rotation
+# The center of the elevation map
 geometry_msgs/Pose origin
 # Keep the original origin. If false the generated maps origin will be at 0,0,0
 bool keep_origin
@@ -9,13 +9,13 @@ float64 truncation_distance
 # Map resolution in m/cell
 float64 resolution
 # Length in x-direction in cells
-int64 cells_x
+float64 x_size
 # Length in y-direction in cells
-int64 cells_y
+float64 y_size
 # Samples per cell dimension (actual samples is samples^2, because we make a samples*samples grid)
 int64 samples
 # Set to true if the resulting map should not be published additionally to being
 # returned as service response
 bool quiet
 ---
-grid_map_msgs/GridMap map
+map_bag_msgs/Map map

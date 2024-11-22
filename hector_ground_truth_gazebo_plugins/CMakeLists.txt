@@ -1,43 +1,78 @@
-cmake_minimum_required(VERSION 3.5.1)
+cmake_minimum_required(VERSION 3.8)
 project(hector_ground_truth_gazebo_plugins)
 
-## Compile as C++11, supported in ROS Kinetic and newer
-add_compile_options(-std=c++11)
+if (CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
+endif ()
 
-find_package(catkin REQUIRED COMPONENTS grid_map_ros hector_ground_truth_gazebo_plugins_msgs)
+find_package(ament_cmake REQUIRED)
+find_package(Eigen3 REQUIRED)
+find_package(gz_common_vendor REQUIRED)
+find_package(gz-common REQUIRED)
+find_package(gz_sim_vendor REQUIRED)
+find_package(gz-sim REQUIRED)
+find_package(gz_rendering_vendor REQUIRED)
+find_package(gz-rendering REQUIRED)
+find_package(gz_sensors_vendor REQUIRED)
+find_package(gz-sensors REQUIRED)
+find_package(gz_plugin_vendor REQUIRED)
+find_package(gz-plugin REQUIRED COMPONENTS register)
+find_package(rclcpp REQUIRED)
+find_package(map_bag REQUIRED)
+find_package(map_bag_msgs REQUIRED)
+find_package(map_bag_ros REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(hector_ground_truth_gazebo_plugins_msgs REQUIRED)
 
-find_package(GAZEBO REQUIRED)
+include_directories(include)
 
-catkin_package(
-  INCLUDE_DIRS include
-  LIBRARIES hector_contact_points_publisher_plugin hector_elevation_map_ground_truth_plugin
-  CATKIN_DEPENDS hector_ground_truth_gazebo_plugins_msgs
-  DEPENDS GAZEBO
+add_library(elevation_map_ground_truth_plugin SHARED src/elevation_map_ground_truth_plugin.cpp)
+ament_target_dependencies(elevation_map_ground_truth_plugin PUBLIC
+  Eigen3
+  rclcpp
+  map_bag
+  map_bag_msgs
+  map_bag_ros
+  std_msgs
+  hector_ground_truth_gazebo_plugins_msgs
+)
+target_link_libraries(elevation_map_ground_truth_plugin PUBLIC
+  gz-common::gz-common
+  gz-sim::gz-sim
+  gz-rendering::gz-rendering
+  gz-sensors::gz-sensors
+  gz-plugin::gz-plugin
 )
 
-###########
-## Build ##
-###########
-
-## Specify additional locations of header files
-## Your package locations should be listed before other locations
-include_directories(
-  include
-  ${catkin_INCLUDE_DIRS}
-  ${GAZEBO_INCLUDE_DIRS}
+add_executable(map_bag_writer src/map_bag_writer.cpp)
+ament_target_dependencies(map_bag_writer PUBLIC
+  rclcpp
+  map_bag
+  map_bag_msgs
+  map_bag_ros
 )
 
-## Declare a C++ library
-add_library(hector_contact_points_publisher_plugin src/contact_points_publisher_plugin.cpp)
-target_link_libraries(hector_contact_points_publisher_plugin ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES})
+install(TARGETS elevation_map_ground_truth_plugin map_bag_writer
+    DESTINATION lib/${PROJECT_NAME}
+)
 
-add_library(hector_elevation_map_ground_truth_plugin src/elevation_map_ground_truth_plugin.cpp)
-target_link_libraries(hector_elevation_map_ground_truth_plugin ${catkin_LIBRARIES} ${GAZEBO_LIBRARIES})
+install(DIRECTORY worlds/
+    DESTINATION share/${PROJECT_NAME}/worlds
+)
 
-#############
-## Install ##
-#############
+ament_environment_hooks(hooks/${PROJECT_NAME}.dsv.in)
+ament_environment_hooks(hooks/${PROJECT_NAME}.sh.in)
 
- install(TARGETS hector_contact_points_publisher_plugin hector_elevation_map_ground_truth_plugin
-   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
- )
+if (BUILD_TESTING)
+    find_package(ament_lint_auto REQUIRED)
+    # the following line skips the linter which checks for copyrights
+    # comment the line when a copyright and license is added to all source files
+    set(ament_cmake_copyright_FOUND TRUE)
+    # the following line skips cpplint (only works in a git repo)
+    # comment the line when this package is in a git repo and when
+    # a copyright and license is added to all source files
+    set(ament_cmake_cpplint_FOUND TRUE)
+    ament_lint_auto_find_test_dependencies()
+endif ()
+
+ament_package()
