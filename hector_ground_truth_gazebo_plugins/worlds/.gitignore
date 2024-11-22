@@ -1,2 +1,4 @@
 *
 !.gitignore
+!syn_ramps.world
+!syn_ramps.dae
